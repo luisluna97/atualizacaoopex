@@ -1,0 +1,17 @@
+# NUNCA subir dados da empresa
+*.xlsx
+*.xlsm
+*.xls
+*.csv
+*.mhtml
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# sistema
+.DS_Store
+Thumbs.db
