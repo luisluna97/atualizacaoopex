@@ -23,12 +23,15 @@ BASES_PADRAO = ['BYO','CGR','CMG','CWB','DOU','FEN','FLN','IGU','JJG','JOI',
 # ── staff ──
 SIM  = {'Trabalhando', 'Férias', 'Atestado'}
 ZERO = {'Auxílio Doença', 'Acidente Trabalho', 'Licença Maternidade',
-        'Lic. Recl', 'Lic. s/ Remuneração'}
+        'Lic. Recl', 'Lic. s/ Remuneração', 'Suspensão Ajuizamento Rec Trab'}
 FORA = {'Aposentadoria Invalidez'}
-RAMPA = {'AGENTE LIDER','AUX SERV AEROPORTUARIO','AUX.SERV GERAIS','AUXILIAR DE RAMPA',
-         'AUXILIAR LIDER DE LIMPEZA','AUXILIAR LIDER DE RAMPA','BALANCEIRO(A)',
-         'MOTORISTA CAT D/E2','OPERADOR DE EQUIP CAT"D"','OPERADOR DE EQUIP CAT"E"',
-         'OPERADOR DE RAMPA','SUPERV.OPERACIONAL'}
+# MGF é a sede: só esse pedaço "operacional" entra na conferência; o resto da
+# folha de MGF (gerência/administrativo corporativo) fica de fora, sem tocar
+# e sem reportar.
+MGF_ESCOPO = {'AGENTE LIDER','AUX SERV AEROPORTUARIO','AUX.SERV GERAIS','AUXILIAR DE RAMPA',
+              'AUXILIAR LIDER DE LIMPEZA','AUXILIAR LIDER DE RAMPA','BALANCEIRO(A)',
+              'MOTORISTA CAT D/E2','OPERADOR DE EQUIP CAT"D"','OPERADOR DE EQUIP CAT"E"',
+              'OPERADOR DE RAMPA','SUPERV.OPERACIONAL','JOVEM APRENDIZ'}
 C_STAFF = {'grupo': 19, 'funcao': 20, 'ch_dia': 22, 'qtde': 24}      # S, T, V, X
 
 # ── voos ──
@@ -39,6 +42,43 @@ def colnum(ref):
     c = re.match(r'([A-Z]+)', ref).group(1); v = 0
     for ch in c: v = v * 26 + (ord(ch) - 64)
     return v
+
+
+# ═══════════════════ nomes de função: folha x OPEX ═══════════════════
+# A folha e o OPEX nem sempre escrevem a função igual. generico() é a
+# normalização "de sempre" (tira o código da base no final, mantém a letra
+# JR/PL/SR mas tira o dígito de sub-nível tipo PL3, e junta todo
+# SUPERV.OPERACIONAL num bucket só porque a folha não separa nível pra esse
+# cargo). sem_nivel() e chave_fuzzy() são usadas só como fallback, quando a
+# chave "de sempre" não acha nada em nenhuma CH -- pra não reportar como
+# "função nova" um cargo que já existe, só escrito diferente (ex.:
+# "COORDENADOR GERAL SPAX" no OPEX == "COORDENADOR DE SPAX JR" na folha).
+_BASES_SUFIXO = r'(BYO|CGR|CMG|CWB|DOU|FEN|FLN|IGU|JJG|JOI|MGF|NVT|POA|UDI|XAP)'
+
+
+def generico(f):
+    f = re.sub(rf'\s+{_BASES_SUFIXO}$', '', str(f).strip().upper())
+    f = re.sub(r'(JR|PL|SR)\d+$', r'\1', f)          # PL3 -> PL (mantém a letra)
+    return 'SUPERV.OPERACIONAL' if f.startswith('SUPERV.OPERACIONAL') else f
+
+
+def sem_nivel(f):
+    """Tira também a letra de nível sozinha no final -- para cargos em que a
+    folha não diferencia nível nenhum (nem letra, nem dígito)."""
+    return re.sub(r'\s+(JR|PL|SR)$', '', f).strip()
+
+
+def chave_fuzzy(f):
+    """Último recurso: tira parênteses, palavras de ligação, a letra de
+    nível sozinha no final e um dígito solto no final -- resolve variação
+    de redação tipo '(A)' vs 'DE', 'GERAL'/'FILIAL' presente só de um lado,
+    'JR' sozinho vs ausente, ou um '1' sozinho no fim."""
+    f = re.sub(r'\([^)]*\)', ' ', f)
+    f = re.sub(r'\b(DE|DA|DO|GERAL|FILIAL)\b', ' ', f)
+    f = re.sub(r'\s+', ' ', f).strip()
+    f = re.sub(r'\s+(JR|PL|SR)$', '', f)
+    f = re.sub(r'\d+$', '', f)
+    return re.sub(r'\s+', ' ', f).strip()
 
 
 # ═══════════════════════ FOLHA (FPRE109) ═══════════════════════
@@ -118,8 +158,7 @@ def agregar_folha(linhas):
             for k in range(col.get('ch', 11) - 1, col.get('ch', 11) + 2):
                 if k in d and re.match(r'^[\d.,:]+$', str(d[k])): ch = d[k]; break
         if not (cargo and ch and sit): continue
-        cargo = str(cargo).strip()
-        if cargo not in RAMPA: continue
+        cargo = generico(cargo)                      # mesma normalização dos dois lados
         chm = ch_mensal(ch)
         if chm is None: continue
         sit = str(sit).strip(); k = (cargo, chm)
@@ -169,12 +208,6 @@ def tipo_de(cia, mod):
 
 
 # ═══════════════════════ OPEX ═══════════════════════
-def generico(f):
-    f = re.sub(r'\s+(BYO|CGR|CMG|CWB|DOU|FEN|FLN|IGU|JJG|JOI|MGF|NVT|POA|UDI|XAP)$',
-               '', str(f).strip())
-    return 'SUPERV.OPERACIONAL' if f.startswith('SUPERV.OPERACIONAL') else f
-
-
 def valor(c, sst):
     t = c.get('t'); v = c.find(Q('v'))
     if t == 'inlineStr':
@@ -207,7 +240,9 @@ def processar(opex_bytes, folha, malha, bases, manter):
     if os.path.exists(p):
         sst = [''.join(t.text or '' for t in si.iter(Q('t'))) for si in etree.parse(p).getroot()]
 
-    rel = {'staff': [], 'faltando': [], 'zerar': [], 'voos': [], 'sem_linha': [], 'ausentes': []}
+    rel = {'staff': [], 'realinhado': [], 'faltando': [], 'zerar': [],
+           'sem_correspondencia': [], 'voos': [], 'sem_linha': [], 'ausentes': [],
+           'comparativo_staff': [], 'comparativo_voos': []}
 
     # ── STAFF ──
     if folha:
@@ -215,38 +250,117 @@ def processar(opex_bytes, folha, malha, bases, manter):
             if b not in mapa or b in manter: continue
             if b not in folha:                  # base sem ninguém na folha: não zera, avisa
                 rel['ausentes'].append(b); continue
-            alvo, zeros = defaultdict(int), {}
+
+            # por_funcao[fkey] = {chm: qtde} -- mutado (consumido) à medida
+            # que vai casando; zeros = combos só com afastados (reporta 0)
+            por_funcao = defaultdict(dict)
+            zeros = {}
             for (cargo, chm), v in folha.get(b, {}).items():
-                if v['sim']: alvo[(cargo, chm)] = v['sim']
+                if v['sim']: por_funcao[cargo][chm] = v['sim']
                 elif v['zero']: zeros[(cargo, chm)] = 0
+            fkeys_conhecidos = set(por_funcao.keys())   # snapshot ANTES de consumir
+
             arq = f"{pasta}/xl/{mapa[b]}"
             tree = etree.parse(arq)
             rows = {int(r.get('r')): r for r in tree.getroot().find(Q('sheetData'))}
-            vistos = set()
+
+            linhas_base, orfaos = [], []
             for rn in sorted(rows):
                 cel = {colnum(c.get('r')): c for c in rows[rn]}
                 g = valor(cel[C_STAFF['grupo']], sst) if C_STAFF['grupo'] in cel else None
                 f = valor(cel[C_STAFF['funcao']], sst) if C_STAFF['funcao'] in cel else None
-                if g != 'RAMPA' or not f: continue
+                if not f: continue
+                if b == 'MGF' and generico(f) not in MGF_ESCOPO: continue   # sede: fora
                 chd = valor(cel[C_STAFF['ch_dia']], sst) if C_STAFF['ch_dia'] in cel else None
                 try: chm = round(float(chd) * 30)
                 except (TypeError, ValueError): chm = 0
-                k = (generico(f), chm)
-                novo = alvo.get(k, 0) if k not in vistos else 0
-                vistos.add(k)
                 atual = valor(cel[C_STAFF['qtde']], sst) if C_STAFF['qtde'] in cel else None
                 try: atual = int(float(atual)) if atual not in (None, '') else 0
                 except ValueError: continue
-                if atual != novo and escreve(cel, C_STAFF['qtde'], novo):
-                    rel['staff'].append({'Base': b, 'Função': f, 'CH': chm,
-                                         'De': atual, 'Para': novo, 'Dif': novo - atual})
-            for k, q in alvo.items():
-                if k not in vistos and q > 0:
-                    rel['faltando'].append({'Base': b, 'Função': k[0], 'CH': k[1], 'Qtde': q})
+                fkey = generico(f)
+                linhas_base.append((rn, cel, f, fkey, chm, atual))
+
+            # soma corrente do que fica no OPEX depois de atualizar (começa
+            # igual ao que já estava; cada escreve() abaixo ajusta a diferença)
+            # -- usada só pro comparativo base a base, não afeta a planilha
+            soma_opex_b = sum(atual for *_, atual in linhas_base)
+
+            # passo 1 — casamento exato (mesma função, mesma CH)
+            for rn, cel, f, fkey, chm, atual in linhas_base:
+                bucket = por_funcao.get(fkey)
+                if bucket and bucket.get(chm, 0) > 0:
+                    novo = bucket[chm]; bucket[chm] = 0
+                    if atual != novo and escreve(cel, C_STAFF['qtde'], novo):
+                        soma_opex_b += novo - atual
+                        rel['staff'].append({'Base': b, 'Função': f, 'CH': chm,
+                                             'De': atual, 'Para': novo, 'Dif': novo - atual})
+                else:
+                    orfaos.append((rn, cel, f, fkey, chm, atual))
+
+            # passo 2 — pareamento global das órfãs: cada linha órfã pode
+            # casar com (a) outra CH da MESMA função já conhecida (ex.:
+            # gerente que passou de 220h pra 180h) ou, só quando o nome
+            # exato não existe NA FOLHA EM CH NENHUMA, (b) o nome "parecido"
+            # (variação de redação, tipo "(A)" vs "DE"). Resolve tudo de uma
+            # vez, sempre escolhendo globalmente a CH mais próxima primeiro
+            # -- evita que uma linha "errada" (de outra CH, mera coincidência
+            # de ordem) roube a sobra que seria da linha certa.
+            restantes = list(orfaos)
+            while restantes:
+                melhor = None   # (distancia, índice em restantes, fk candidata, ch2)
+                for i, (rn, cel, f, fkey, chm, atual) in enumerate(restantes):
+                    candidatas_fk = [fkey] if fkey in por_funcao else \
+                        [fk for fk in por_funcao if chave_fuzzy(fk) == chave_fuzzy(fkey)]
+                    for fk in candidatas_fk:
+                        for ch2, q in por_funcao[fk].items():
+                            if q <= 0: continue
+                            d = abs(ch2 - chm)
+                            if melhor is None or d < melhor[0]:
+                                melhor = (d, i, fk, ch2)
+                if melhor is None: break
+                _, i, fk, ch2 = melhor
+                rn, cel, f, fkey, chm, atual = restantes.pop(i)
+                novo = por_funcao[fk][ch2]; por_funcao[fk][ch2] = 0
+                if escreve(cel, C_STAFF['ch_dia'], round(ch2 / 30, 2)):
+                    escreve(cel, C_STAFF['qtde'], novo)
+                    soma_opex_b += novo - atual
+                    nome = f if fk == fkey else f'{f} (= "{fk}" na folha)'
+                    rel['realinhado'].append({'Base': b, 'Função': nome, 'CH_antiga': chm,
+                                              'CH_nova': ch2, 'Qtde': novo})
+
+            # passo 3 — o que não casou de jeito nenhum
+            for rn, cel, f, fkey, chm, atual in restantes:
+                if fkey in fkeys_conhecidos:
+                    # a folha CONHECE essa função -- só não sobrou nenhuma
+                    # pessoa pra essa linha (já foi toda pra outra CH/linha
+                    # irmã). Isso é normal (zera, igual sempre fez).
+                    if atual != 0 and escreve(cel, C_STAFF['qtde'], 0):
+                        soma_opex_b += -atual
+                        rel['staff'].append({'Base': b, 'Função': f, 'CH': chm,
+                                             'De': atual, 'Para': 0, 'Dif': -atual})
+                elif atual > 0:
+                    # a folha NUNCA viu essa função nessa base, em CH nenhuma
+                    # -- não dá pra saber se é gente que saiu ou só um nome
+                    # escrito diferente. NÃO zera sozinho, só avisa.
+                    rel['sem_correspondencia'].append({'Base': b, 'Função': f, 'CH': chm, 'Qtde': atual})
+
+            for fk, bucket in por_funcao.items():
+                if b == 'MGF' and fk not in MGF_ESCOPO: continue   # sede: fora de escopo
+                for chm2, q in bucket.items():
+                    if q > 0:
+                        rel['faltando'].append({'Base': b, 'Função': fk, 'CH': chm2, 'Qtde': q})
             for k in zeros:
-                if k not in vistos:
-                    rel['zerar'].append({'Base': b, 'Função': k[0], 'CH': k[1]})
+                rel['zerar'].append({'Base': b, 'Função': k[0], 'CH': k[1]})
             tree.write(arq, xml_declaration=True, encoding='UTF-8', standalone=True)
+
+            # comparativo base a base: o que fica no OPEX depois de
+            # atualizar x o que a folha (109) diz que deveria ter
+            total_109_b = sum(v['sim'] for (cargo, _), v in folha.get(b, {}).items()
+                              if not (b == 'MGF' and cargo not in MGF_ESCOPO))
+            rel['comparativo_staff'].append({
+                'Base': b, 'OPEX (após atualizar)': soma_opex_b, '109': total_109_b,
+                'Diferença': soma_opex_b - total_109_b,
+            })
 
     # ── VOOS ──
     if malha and 'Voos&Tarifas' in mapa:
@@ -275,6 +389,9 @@ def processar(opex_bytes, folha, malha, bases, manter):
             cont[(cia, base, e, tipo_de(cia, x.get('Mod')))] += 1
 
         usados = set()
+        # comparativo por (Base, Cia) -- não só por base: um erro tipo "uma
+        # cia aérea a mais numa base" só aparece nesse nível de detalhe
+        soma_opex_voos = defaultdict(int)
         for cel, base, cli, eq, tp in linhas:
             k = (cli, base, eq, tp)
             novo = cont.get(k, 0) if k not in usados else 0
@@ -282,7 +399,9 @@ def processar(opex_bytes, folha, malha, bases, manter):
             atual = valor(cel[C_VOO['qtde']], sst) if C_VOO['qtde'] in cel else None
             try: atual = int(float(atual)) if atual not in (None, '') else 0
             except (TypeError, ValueError): continue
+            soma_opex_voos[(base, cli)] += atual
             if atual != novo and escreve(cel, C_VOO['qtde'], novo):
+                soma_opex_voos[(base, cli)] += novo - atual
                 rel['voos'].append({'Base': base, 'Cliente': cli, 'Equip': eq, 'Tipo': tp,
                                     'De': atual, 'Para': novo, 'Dif': novo - atual})
         for k, v in cont.items():
@@ -290,6 +409,18 @@ def processar(opex_bytes, folha, malha, bases, manter):
                 rel['sem_linha'].append({'Base': k[1], 'Cliente': k[0], 'Equip': k[2],
                                          'Tipo': k[3], 'Voos': v})
         tree.write(arq, xml_declaration=True, encoding='UTF-8', standalone=True)
+
+        # comparativo Base × Cia: voos que ficam no OPEX x voos da malha
+        soma_malha_voos = defaultdict(int)
+        for k, v in cont.items():
+            cia, base_m = k[0], k[1]
+            soma_malha_voos[(base_m, cia)] += v
+        for (base, cli) in sorted(set(soma_opex_voos) | set(soma_malha_voos)):
+            o, m = soma_opex_voos.get((base, cli), 0), soma_malha_voos.get((base, cli), 0)
+            rel['comparativo_voos'].append({
+                'Base': base, 'Cia': cli, 'OPEX (após atualizar)': o, 'Malha': m,
+                'Diferença': o - m,
+            })
 
     # ── recalcular ao abrir ──
     wp = f'{pasta}/xl/workbook.xml'; wt = etree.parse(wp)
@@ -326,7 +457,7 @@ f_opex = st.file_uploader("**OPEX** — obrigatório", type=['xlsx', 'xlsm'])
 
 c1, c2 = st.columns(2)
 with c1:
-    st.markdown("**1 · Staff** — grupo RAMPA nas abas de base")
+    st.markdown("**1 · Staff** — todos os grupos nas abas de base (MGF só a parte operacional)")
     f_folha = st.file_uploader("Folha (FPRE109) — .xlsx ou .xls", type=['xlsx', 'xls'], key="folha")
 with c2:
     st.markdown("**2 · Voos** — aba Voos&Tarifas")
@@ -358,9 +489,9 @@ if st.button("Atualizar OPEX", type="primary", use_container_width=True, disable
         try:
             folha = agregar_folha(ler_folha(f_folha.getvalue()))
             if not folha:
-                st.error("Não encontrei ninguém do grupo RAMPA na folha."); st.stop()
+                st.error("Não encontrei ninguém na folha."); st.stop()
             tot = sum(v['sim'] for d in folha.values() for v in d.values())
-            st.success(f"Folha: **{tot} pessoas** de RAMPA em {len(folha)} bases.")
+            st.success(f"Folha: **{tot} pessoas** (Trabalhando/Férias/Atestado) em {len(folha)} bases.")
         except Exception as e:
             st.error(f"Não consegui ler a folha: {e}"); st.stop()
     if f_malha:
@@ -378,9 +509,28 @@ if st.button("Atualizar OPEX", type="primary", use_container_width=True, disable
         st.error(f"Não consegui atualizar o OPEX: {e}"); st.stop()
 
     a, b_, c = st.columns(3)
-    a.metric("Staff — células alteradas", len(rel['staff']))
+    a.metric("Staff — células alteradas", len(rel['staff']) + len(rel['realinhado']))
     b_.metric("Voos — linhas alteradas", len(rel['voos']))
-    c.metric("Pendências", len(rel['faltando']) + len(rel['sem_linha']))
+    c.metric("Pendências", len(rel['faltando']) + len(rel['sem_linha']) + len(rel['sem_correspondencia']))
+
+    st.subheader("Comparativo base a base")
+    comp1, comp2 = st.columns(2)
+    with comp1:
+        st.caption("**Staff** — OPEX depois de atualizar × 109")
+        if rel['comparativo_staff']:
+            dfc = pd.DataFrame(rel['comparativo_staff'])
+            dfc.insert(0, '', dfc['Diferença'].apply(lambda d: '✅' if d == 0 else '⚠️'))
+            st.dataframe(dfc, use_container_width=True, hide_index=True)
+        else:
+            st.caption("Envie a folha pra ver esse comparativo.")
+    with comp2:
+        st.caption("**Voos** — OPEX depois de atualizar × malha")
+        if rel['comparativo_voos']:
+            dfc2 = pd.DataFrame(rel['comparativo_voos'])
+            dfc2.insert(0, '', dfc2['Diferença'].apply(lambda d: '✅' if d == 0 else '⚠️'))
+            st.dataframe(dfc2, use_container_width=True, hide_index=True)
+        else:
+            st.caption("Envie a malha pra ver esse comparativo.")
 
     if folha:
         st.subheader("Staff")
@@ -391,10 +541,19 @@ if st.button("Atualizar OPEX", type="primary", use_container_width=True, disable
                 columns={'Dif': 'Saldo'}), use_container_width=True, hide_index=True)
         else:
             st.info("O staff já estava batendo com a folha.")
+        if rel['realinhado']:
+            st.info("Linha que já existia, só mudou de CH (realinhada em vez de reportada "
+                    "como função nova):")
+            st.dataframe(pd.DataFrame(rel['realinhado']), use_container_width=True, hide_index=True)
         if rel['faltando']:
             st.warning("Linhas que você precisa criar no OPEX (a função existe na folha, "
                        "mas não há linha na aba):")
             st.dataframe(pd.DataFrame(rel['faltando']), use_container_width=True, hide_index=True)
+        if rel['sem_correspondencia']:
+            st.warning("Função que está no OPEX com gente, mas a folha não tem esse nome em "
+                       "CH nenhuma — **não mexi na quantidade**, confira se é gente que saiu "
+                       "ou só um nome escrito diferente:")
+            st.dataframe(pd.DataFrame(rel['sem_correspondencia']), use_container_width=True, hide_index=True)
         if rel['ausentes']:
             st.error("Estas bases **não apareceram na folha** e foram mantidas como estavam "
                      "(nada foi zerado): " + ", ".join(rel['ausentes']) +

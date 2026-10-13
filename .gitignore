@@ -1,17 +1,18 @@
-# NUNCA subir dados da empresa
+# Dados de folha, OPEX e malha -- nunca versionar (dados de pessoal/operação)
 *.xlsx
-*.xlsm
 *.xls
+*.xlsm
 *.csv
 *.mhtml
 
-# python
+# Python
 __pycache__/
-*.py[cod]
+*.pyc
 .venv/
 venv/
-.env
 
-# sistema
+# Streamlit
+.streamlit/secrets.toml
+
+# Sistema
 .DS_Store
-Thumbs.db
