@@ -145,6 +145,14 @@ def conv_equip(eq):
     return tipo, (f"{int(cod):02d}" if str(cod).isdigit() else cod)
 
 
+def txt(v):
+    """Texto limpo; célula vazia (NaN) vira '' em vez da palavra 'nan'."""
+    if v is None or (isinstance(v, float) and v != v):
+        return ""
+    s = str(v).strip()
+    return "" if s.lower() in ("nan", "nat", "none") else s
+
+
 def norm(s):
     s = unicodedata.normalize("NFKD", str(s))
     return "".join(c for c in s if not unicodedata.combining(c)).strip().upper()
@@ -161,7 +169,8 @@ def ler_gol(arq):
         sep = ";" if raw.count(";") > raw.count(",") else ","
         df = pd.read_csv(io.StringIO(raw), sep=sep, dtype=str)
     df.columns = [str(c).strip() for c in df.columns]
-    col = {norm(c): c for c in df.columns}
+    # a GOL às vezes exporta com sublinhado (Inbound_Flt_Num) e às vezes com espaço
+    col = {norm(c).replace("_", " "): c for c in df.columns}
     need = ["AIRPORT", "DAY", "INBOUND FLT NUM", "INBOUND STA", "OUTBOUND STD", "EQUIP"]
     faltando = [n for n in need if n not in col]
     if faltando:
@@ -175,7 +184,7 @@ def ler_gol(arq):
         out.append({
             "Base": base, "Nome": "GOL",
             "Data": dt,
-            "Voo": str(r[col["INBOUND FLT NUM"]]).strip(),
+            "Voo": txt(r[col["INBOUND FLT NUM"]]),
             "Hora Chegada": hhmm(r[col["INBOUND STA"]]),
             "Hora Saída": hhmm(r[col["OUTBOUND STD"]]),
             "equip": r[col["EQUIP"]],
@@ -214,7 +223,7 @@ def ler_azul(arq):
             continue
         out.append({
             "Base": base, "Nome": "AZUL", "Data": dt,
-            "Voo": str(r[c_flt]).strip() if c_flt else "",
+            "Voo": txt(r[c_flt]) if c_flt else "",
             "Hora Chegada": hhmm(r[c_sta]),
             "Hora Saída": hhmm(r[c_std]),
             "equip": r[c_eq] if c_eq else None,
@@ -269,7 +278,7 @@ def ler_latam(arq):
             continue
         out.append({
             "Base": base, "Nome": "LATAM", "Data": dia.strftime("%d/%m/%Y"),
-            "Voo": str(rd[P["VUELO"]]).strip(),
+            "Voo": txt(rd[P["VUELO"]]),
             "Hora Chegada": hhmm(rd[P["STA"]]),
             "Hora Saída": hhmm(ro[P["STD"]]),
             "equip": rd[i_mat] if i_mat is not None else None,
@@ -340,6 +349,48 @@ def ler_manual(arq, base_hint=""):
     return out
 
 
+def repetir_padrao(regs, ano, mes, limiar=0.5):
+    """Projeta as malhas manuais de um mês para outro, por dia da semana.
+
+    Para cada voo (base, cia, nº do voo) e cada dia da semana: se ele operou em
+    pelo menos `limiar` das ocorrências daquele dia da semana no mês de origem,
+    repete em TODOS os dias iguais do mês de destino, com o horário mais comum.
+    Exceções de um dia só (voo que mudou de horário uma vez) não são repetidas.
+    """
+    import calendar
+    from collections import Counter
+    datas = [(para_date(r["Data"]), r) for r in regs]
+    datas = [(d, r) for d, r in datas if d]
+    if not datas:
+        return [], []
+    ym = Counter((d.year, d.month) for d, _ in datas).most_common(1)[0][0]
+    datas = [(d, r) for d, r in datas if (d.year, d.month) == ym]
+    def dias_do_mes(a, m):
+        return [date(a, m, k) for k in range(1, calendar.monthrange(a, m)[1] + 1)]
+    ocorr_origem = Counter(d.weekday() for d in dias_do_mes(*ym))
+    grupos = defaultdict(list)
+    for d, r in datas:
+        grupos[(r["Base"], r["Nome"], r["Voo"], d.weekday())].append((d, r))
+    novos, resumo = [], []
+    for (base, cia, voo, wd), itens in sorted(grupos.items()):
+        frac = len({d for d, _ in itens}) / ocorr_origem[wd]
+        if frac < limiar:
+            continue
+        horarios = Counter((r["Hora Chegada"], r["Hora Saída"], str(r.get("equip"))) for _, r in itens)
+        (cheg, said, eq), _ = horarios.most_common(1)[0]
+        destino = [d for d in dias_do_mes(ano, mes) if d.weekday() == wd]
+        for d in destino:
+            novos.append({"Base": base, "Nome": cia, "Data": d.strftime("%d/%m/%Y"), "Voo": voo,
+                          "Hora Chegada": cheg, "Hora Saída": said,
+                          "equip": None if eq == "None" else eq})
+        resumo.append({"Base": base, "Cia": cia, "Voo": voo,
+                       "Dia da semana": ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"][wd],
+                       "Chegada": cheg, "Saída": said,
+                       "Origem": f"{len({d for d, _ in itens})}/{ocorr_origem[wd]} dias",
+                       "Voos no mês novo": len(destino)})
+    return novos, resumo
+
+
 # ───────────────────────── montagem do CSV ─────────────────────────
 def montar(regs, cias_por_base, periodo, incluir_meli):
     linhas, descartes = [], defaultdict(int)
@@ -403,10 +454,10 @@ if "meli" not in st.session_state:
 with st.sidebar:
     st.header("Período")
     hoje = date.today()
-    ano = st.number_input("Ano", 2024, 2035, 2026)
+    ano = st.number_input("Ano", 2024, 2035, min(max(hoje.year, 2024), 2035))
     meses_nome = ["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"]
     sel = st.multiselect("Meses", options=list(range(1, 13)),
-                         default=[9], format_func=lambda m: meses_nome[m-1])
+                         default=[hoje.month], format_func=lambda m: meses_nome[m-1])
     periodo = {(int(ano), m) for m in sel}
 
     st.divider()
@@ -443,8 +494,14 @@ with c2:
                              accept_multiple_files=True)
     f_man = st.file_uploader("**Manuais** — aba *MALHA MES*", type=["xlsx","xlsm","xls"],
                              accept_multiple_files=True)
+    f_man_ant = st.file_uploader(
+        "**Manuais do mês anterior** — só se você NÃO recebeu a manual deste mês",
+        type=["xlsx","xlsm","xls"], accept_multiple_files=True,
+        help="Repete o padrão por dia da semana do mês anterior no(s) mês(es) escolhido(s). "
+             "É uma projeção, não a malha real. O nome do arquivo precisa começar com a "
+             "sigla da base (ex.: FLN_Malha_manual_OUT26.xlsx).")
 
-if st.button("Gerar CSV", type="primary", use_container_width=True):
+if st.button("Gerar CSV", type="primary", width="stretch"):
     if not periodo:
         st.error("Escolha ao menos um mês.")
         st.stop()
@@ -455,10 +512,29 @@ if st.button("Gerar CSV", type="primary", use_container_width=True):
         for a in (arqs or []):
             try:
                 r = leitor(a)
+                for x in r:
+                    x["_fonte"], x["_arq"] = nome, a.name
                 regs += r
                 lidos[f"{nome} · {a.name}"] = len(r)
             except Exception as e:
                 erros.append(f"**{nome} · {a.name}** — {e}")
+
+    # manuais que não chegaram: repete o padrão do mês anterior por dia da semana
+    padrao_resumo = []
+    if f_man_ant:
+        reg_ant = []
+        for a in f_man_ant:
+            try:
+                reg_ant += ler_manual(a)
+            except Exception as e:
+                erros.append(f"**Manual (mês anterior) · {a.name}** — {e}")
+        for ano_, mes_ in sorted(periodo):
+            novos, resumo = repetir_padrao(reg_ant, ano_, mes_)
+            for x in novos:
+                x["_fonte"], x["_arq"] = "Manual", f"padrão repetido ({mes_:02d}/{ano_})"
+            regs += novos
+            padrao_resumo += resumo
+            lidos[f"Manual · padrão repetido para {mes_:02d}/{ano_}"] = len(novos)
 
     if erros:
         for e in erros:
@@ -467,7 +543,32 @@ if st.button("Gerar CSV", type="primary", use_container_width=True):
         st.warning("Nenhum voo lido. Envie ao menos um arquivo.")
         st.stop()
 
+    # Dois arquivos da MESMA companhia cobrindo a mesma base e o mesmo dia fazem a
+    # cia sair contada em dobro (foi o que aconteceu com a AZUL: AD_NOV + AD_FEN).
+    cobertura = defaultdict(set)      # (fonte, base, dia) -> arquivos que cobrem
+    for r in regs:
+        d = para_date(r["Data"])
+        if d and (d.year, d.month) in periodo and r["Base"] in st.session_state.cias \
+                and r["Nome"] in st.session_state.cias[r["Base"]] and r.get("_arq"):
+            cobertura[(r["_fonte"], r["Base"], d)].add(r["_arq"])
+    repetidos = defaultdict(lambda: [set(), 0])
+    for (fonte, base, d), arqs_ in cobertura.items():
+        if len(arqs_) > 1:
+            repetidos[fonte][0] |= arqs_
+            repetidos[fonte][1] += 1
+    for fonte, (arqs_, ndias) in repetidos.items():
+        st.error(f"⚠️ **{fonte} está duplicada**: {', '.join(sorted(arqs_))} cobrem as mesmas "
+                 f"bases e dias ({ndias} combinações base × dia). Os voos vão sair contados em "
+                 f"dobro. Remova o arquivo mais antigo e gere de novo.")
+
     linhas, desc = montar(regs, st.session_state.cias, periodo, st.session_state.meli)
+
+    if padrao_resumo:
+        st.warning("📅 As manuais deste mês **não são reais**: repeti o padrão do mês anterior "
+                   "por dia da semana. Confira se algum voo mudou, e troque pela manual de "
+                   "verdade quando ela chegar.")
+        with st.expander(f"Padrão repetido ({sum(x['Voos no mês novo'] for x in padrao_resumo)} voos)"):
+            st.dataframe(pd.DataFrame(padrao_resumo), width="stretch", hide_index=True)
 
     with st.expander(f"Arquivos lidos ({sum(lidos.values())} registros)", expanded=False):
         for k, v in lidos.items():
@@ -491,10 +592,10 @@ if st.button("Gerar CSV", type="primary", use_container_width=True):
     st.dataframe(
         df.pivot_table(index="Base", columns="Nome", values="Voo",
                        aggfunc="count", fill_value=0, margins=True, margins_name="Total"),
-        use_container_width=True)
-    st.dataframe(df.head(50), use_container_width=True, hide_index=True)
+        width="stretch")
+    st.dataframe(df.head(50), width="stretch", hide_index=True)
 
     mm = "-".join(f"{m:02d}" for m in sorted(sel))
     st.download_button("⬇️ Baixar CSV", gerar_csv(linhas),
                        file_name=f"Malha_RP_{ano}_{mm}.csv", mime="text/csv",
-                       type="primary", use_container_width=True)
+                       type="primary", width="stretch")

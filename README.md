@@ -99,6 +99,22 @@ O rótulo do equipamento segue o que já existe naquela base e cliente
 - **Voos sem linha de tarifa**: combinação de base/cliente/equipamento que não
   existe na aba Voos&Tarifas e por isso não foi lançada
 
+## Conversor de Malha — o que ele confere
+
+- **Arquivo duplicado da mesma cia**: se dois arquivos (ex.: dois da AZUL) cobrem
+  a mesma base e o mesmo dia, o app mostra um erro vermelho — os voos sairiam
+  contados em dobro. Suba só o arquivo mais novo
+- **Manual que não chegou**: envie as manuais do mês anterior em *Manuais do mês
+  anterior* e o app repete o padrão **por dia da semana** (um voo que operou em
+  pelo menos metade das ocorrências daquele dia da semana, com o horário mais
+  comum). É uma projeção — o app avisa e mostra a tabela do que foi repetido.
+  O nome do arquivo precisa começar com a sigla da base (`FLN_...`)
+- Cabeçalhos da GOL com sublinhado (`Inbound_Flt_Num`) ou com espaço são aceitos
+- Voo sem número na origem sai com o campo vazio (não mais a palavra `nan`)
+
+No Atualizador, clientes que o OPEX junta numa linha só (ex.: `SKY + JETSMART` em
+FLN) recebem os voos da malha de cada cia (`SKY`, `JETSMART`) normalmente.
+
 ## Segurança
 
 O `.gitignore` bloqueia `.xlsx`, `.xls`, `.csv` e `.mhtml` — nenhum arquivo de

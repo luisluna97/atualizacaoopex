@@ -381,10 +381,19 @@ def processar(opex_bytes, folha, malha, bases, manter):
             linhas.append((cel, base, cli, eq, tp))
             rotulos[(cli, base)].add(eq)
 
+        def cliente_opex(cia, base):
+            """O OPEX às vezes junta clientes numa linha só (ex.: 'SKY + JETSMART'
+            em FLN), enquanto a malha traz cada cia separada."""
+            if (cia, base) in rotulos: return cia
+            cand = [cl for (cl, b) in rotulos
+                    if b == base and cia in [p.strip() for p in cl.split('+')]]
+            return cand[0] if len(cand) == 1 else cia
+
         cont = defaultdict(int)
         for x in malha:
             cia, base = str(x.get('Nome', '')).strip().upper(), str(x.get('Base', '')).strip()
             if not cia or not base: continue
+            cia = cliente_opex(cia, base)
             e = equip_de(x.get('Tipo'), rotulos.get((cia, base), set()))
             cont[(cia, base, e, tipo_de(cia, x.get('Mod')))] += 1
 
@@ -483,7 +492,7 @@ if not f_opex:
 elif not pronto:
     st.warning("Envie a folha, a malha, ou as duas.")
 
-if st.button("Atualizar OPEX", type="primary", use_container_width=True, disabled=not pronto):
+if st.button("Atualizar OPEX", type="primary", width="stretch", disabled=not pronto):
     folha = malha = None
     if f_folha:
         try:
@@ -520,7 +529,7 @@ if st.button("Atualizar OPEX", type="primary", use_container_width=True, disable
         if rel['comparativo_staff']:
             dfc = pd.DataFrame(rel['comparativo_staff'])
             dfc.insert(0, '', dfc['Diferença'].apply(lambda d: '✅' if d == 0 else '⚠️'))
-            st.dataframe(dfc, use_container_width=True, hide_index=True)
+            st.dataframe(dfc, width="stretch", hide_index=True)
         else:
             st.caption("Envie a folha pra ver esse comparativo.")
     with comp2:
@@ -528,7 +537,7 @@ if st.button("Atualizar OPEX", type="primary", use_container_width=True, disable
         if rel['comparativo_voos']:
             dfc2 = pd.DataFrame(rel['comparativo_voos'])
             dfc2.insert(0, '', dfc2['Diferença'].apply(lambda d: '✅' if d == 0 else '⚠️'))
-            st.dataframe(dfc2, use_container_width=True, hide_index=True)
+            st.dataframe(dfc2, width="stretch", hide_index=True)
         else:
             st.caption("Envie a malha pra ver esse comparativo.")
 
@@ -536,46 +545,46 @@ if st.button("Atualizar OPEX", type="primary", use_container_width=True, disable
         st.subheader("Staff")
         if rel['staff']:
             df = pd.DataFrame(rel['staff'])
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)
             st.dataframe(df.groupby('Base')['Dif'].sum().reset_index().rename(
-                columns={'Dif': 'Saldo'}), use_container_width=True, hide_index=True)
+                columns={'Dif': 'Saldo'}), width="stretch", hide_index=True)
         else:
             st.info("O staff já estava batendo com a folha.")
         if rel['realinhado']:
             st.info("Linha que já existia, só mudou de CH (realinhada em vez de reportada "
                     "como função nova):")
-            st.dataframe(pd.DataFrame(rel['realinhado']), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rel['realinhado']), width="stretch", hide_index=True)
         if rel['faltando']:
             st.warning("Linhas que você precisa criar no OPEX (a função existe na folha, "
                        "mas não há linha na aba):")
-            st.dataframe(pd.DataFrame(rel['faltando']), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rel['faltando']), width="stretch", hide_index=True)
         if rel['sem_correspondencia']:
             st.warning("Função que está no OPEX com gente, mas a folha não tem esse nome em "
                        "CH nenhuma — **não mexi na quantidade**, confira se é gente que saiu "
                        "ou só um nome escrito diferente:")
-            st.dataframe(pd.DataFrame(rel['sem_correspondencia']), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rel['sem_correspondencia']), width="stretch", hide_index=True)
         if rel['ausentes']:
             st.error("Estas bases **não apareceram na folha** e foram mantidas como estavam "
                      "(nada foi zerado): " + ", ".join(rel['ausentes']) +
                      ". Se elas realmente não têm mais ninguém, zere na mão.")
         if rel['zerar']:
             st.caption("Funções só com afastados — devem entrar com 0:")
-            st.dataframe(pd.DataFrame(rel['zerar']), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rel['zerar']), width="stretch", hide_index=True)
 
     if malha:
         st.subheader("Voos")
         if rel['voos']:
             df = pd.DataFrame(rel['voos'])
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)
             st.dataframe(df.groupby('Base')[['De', 'Para']].sum().reset_index(),
-                         use_container_width=True, hide_index=True)
+                         width="stretch", hide_index=True)
         else:
             st.info("Os voos já estavam batendo com a malha.")
         if rel['sem_linha']:
             st.warning("Voos sem linha de tarifa no OPEX (não foram lançados):")
-            st.dataframe(pd.DataFrame(rel['sem_linha']), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rel['sem_linha']), width="stretch", hide_index=True)
 
     nome = f_opex.name.rsplit('.', 1)[0] + '_ATUALIZADO.xlsx'
     st.download_button("⬇️ Baixar OPEX atualizado", saida, file_name=nome,
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                       type="primary", use_container_width=True)
+                       type="primary", width="stretch")
